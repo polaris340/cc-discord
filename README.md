@@ -31,6 +31,16 @@ docker compose run --rm cc-discord claude
 docker compose up -d
 ```
 
+## Virtual Display (noVNC)
+
+The container runs a virtual display (Xvfb) so Claude Code can use browser and computer-use tools. View the display in your browser:
+
+```
+http://localhost:6080/vnc.html
+```
+
+To change the host port, set `NOVNC_HOST_PORT` in `.env`.
+
 ## Commands
 
 | Command | Description |
@@ -49,3 +59,5 @@ Any other message is sent to Claude as a prompt.
 | `DISCORD_TOKEN` | Yes | Discord bot token |
 | `ALLOWED_USER_ID` | No | Restrict bot to a single Discord user |
 | `WORKSPACE` | No | Working directory for claude processes (default: cwd) |
+| `NOVNC_HOST_PORT` | No | noVNC host port (default: 6080) |
+| `SCREEN_RESOLUTION` | No | Virtual display resolution (default: 1920x1080x24) |

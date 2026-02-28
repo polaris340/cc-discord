@@ -3,6 +3,11 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    shm_size: '2gb'
+    ports:
+      - "${NOVNC_HOST_PORT:-6080}:6080"
     volumes:
       - ./workspace:/workspace
       - ./sessions:/home/claude/.claude
+    environment:
+      - DISPLAY=:99
