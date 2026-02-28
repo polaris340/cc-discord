@@ -275,7 +275,7 @@ client.on("messageCreate", async (message) => {
 
   // Reject if already processing
   if (session.onChunk) {
-    await message.reply("⏳ 작업 중입니다. `!abort`로 취소하세요.");
+    await message.reply("⏳ Busy. Use `!abort` to cancel.");
     return;
   }
 
