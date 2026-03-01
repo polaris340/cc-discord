@@ -47,7 +47,9 @@ To change the host port, set `NOVNC_HOST_PORT` in `.env`.
 |---------|-------------|
 | `!new` | Start a new session (kill + respawn) |
 | `!model <name>` | Restart with a different model (sonnet, opus, haiku) |
-| `!abort` | Abort current task |
+| `!abort` | Abort current task (session preserved) |
+| `!sessions` | List recent sessions with previews |
+| `!resume <n>` | Resume a previous session by number or ID |
 | `!help` | Show command list |
 
 Any other message is sent to Claude as a prompt. Messages sent while Claude is busy are automatically queued and processed in order.

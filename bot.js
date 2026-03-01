@@ -1,7 +1,8 @@
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 import { spawn } from "child_process";
-import { writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { writeFile, mkdir, readdir, stat, open } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const ALLOWED_USER_ID = process.env.ALLOWED_USER_ID;
@@ -170,6 +171,60 @@ function sendPrompt(session, text) {
   session.proc.stdin.write(JSON.stringify(msg) + "\n");
 }
 
+// ── Session listing ──────────────────────────────────────────────────
+function getSessionDir() {
+  const abs = resolve(WORKSPACE);
+  const encoded = abs.replace(/\//g, "-");
+  return join(homedir(), ".claude", "projects", encoded);
+}
+
+async function getFirstUserMessage(filepath) {
+  let handle;
+  try {
+    handle = await open(filepath, "r");
+    const buf = Buffer.alloc(50000);
+    const { bytesRead } = await handle.read(buf, 0, 50000, 0);
+    const text = buf.toString("utf-8", 0, bytesRead);
+    for (const line of text.split("\n")) {
+      try {
+        const d = JSON.parse(line);
+        if (d.type === "user") {
+          let msg = d.message?.content || "";
+          if (Array.isArray(msg)) {
+            msg = msg.filter((b) => b.type === "text").map((b) => b.text).join(" ");
+          }
+          msg = msg.replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, "").trim();
+          if (msg.length > 10) return msg.slice(0, 60);
+        }
+      } catch {}
+    }
+  } catch {} finally {
+    await handle?.close();
+  }
+  return "";
+}
+
+async function listSessions(limit = 10) {
+  const dir = getSessionDir();
+  let files;
+  try { files = await readdir(dir); }
+  catch { return []; }
+
+  const jsonlFiles = files.filter((f) => f.endsWith(".jsonl"));
+  const sessions = [];
+  for (const file of jsonlFiles) {
+    const fp = join(dir, file);
+    try {
+      const st = await stat(fp);
+      const sid = file.replace(".jsonl", "");
+      const firstMsg = await getFirstUserMessage(fp);
+      sessions.push({ sid, mtime: st.mtimeMs, firstMsg });
+    } catch {}
+  }
+  sessions.sort((a, b) => b.mtime - a.mtime);
+  return sessions.slice(0, limit);
+}
+
 // ── Commands ────────────────────────────────────────────────────────
 const COMMANDS = {
   new: {
@@ -205,6 +260,57 @@ const COMMANDS = {
     },
     reply: "🛑 Aborted. Session preserved.",
   },
+
+  sessions: {
+    async run(_s, _args, message) {
+      const list = await listSessions(10);
+      if (!list.length) {
+        await message.reply("No saved sessions found.");
+        return;
+      }
+      const lines = ["**Recent Sessions:**"];
+      for (let i = 0; i < list.length; i++) {
+        const { sid, mtime, firstMsg } = list[i];
+        const date = new Date(mtime).toLocaleString("en-US", {
+          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+        });
+        const preview = firstMsg || "(no preview)";
+        lines.push(`\`${i + 1}\` \`${sid.slice(0, 8)}\` ${date} — ${preview}`);
+      }
+      lines.push("", "Use `!resume <number>` to resume a session.");
+      await message.reply(lines.join("\n"));
+    },
+  },
+
+  resume: {
+    async run(_s, args, message, channelId) {
+      if (!args) {
+        await message.reply("Usage: `!resume <number>` (see `!sessions` for list)");
+        return;
+      }
+      const idx = parseInt(args.trim(), 10);
+      let sessionId;
+      if (!isNaN(idx) && idx >= 1) {
+        const list = await listSessions(10);
+        if (idx > list.length) {
+          await message.reply(`Only ${list.length} sessions available. Use \`!sessions\` to see list.`);
+          return;
+        }
+        sessionId = list[idx - 1].sid;
+      } else {
+        // treat as partial/full session ID
+        const list = await listSessions(50);
+        const match = list.find((s) => s.sid.startsWith(args.trim()));
+        if (!match) {
+          await message.reply("Session not found. Use `!sessions` to see available sessions.");
+          return;
+        }
+        sessionId = match.sid;
+      }
+      spawnClaude(channelId, null, sessionId);
+      await message.reply(`🔄 Resumed session \`${sessionId.slice(0, 8)}…\``);
+    },
+  },
 };
 
 async function handleHelp(message) {
@@ -212,7 +318,9 @@ async function handleHelp(message) {
     "**Commands:**",
     "`!new` — start a new session (kill + respawn)",
     "`!model <name>` — restart with a different model (sonnet, opus, haiku)",
-    "`!abort` — abort current task",
+    "`!abort` — abort current task (session preserved)",
+    "`!sessions` — list recent sessions",
+    "`!resume <n>` — resume a previous session",
     "`!help` — this message",
     "",
     "Any other message is sent to Claude as a prompt.",
@@ -342,7 +450,8 @@ client.on("messageCreate", async (message) => {
     const cmd = COMMANDS[cmdName];
     if (cmd) {
       const session = sessions.get(message.channelId);
-      if (!session) {
+      const needsSession = !["sessions", "resume"].includes(cmdName);
+      if (needsSession && !session) {
         await message.reply("No active session. Send a message first.");
         return;
       }
