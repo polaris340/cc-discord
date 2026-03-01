@@ -5,11 +5,11 @@ Discord bot that bridges to [Claude Code](https://docs.anthropic.com/en/docs/cla
 ## Architecture
 
 ```
-Discord message → bot.js → claude process (1 per channel)
-                              ↕ stdin/stdout (NDJSON)
-                           stream-json bidirectional
-                              ↓
-                        throttled message edits → Discord
+Discord message → bot.js → queue (if busy) → claude process (1 per channel)
+                                                ↕ stdin/stdout (NDJSON)
+                                             stream-json bidirectional
+                                                ↓
+                                          throttled message edits → Discord
 ```
 
 ## Setup
@@ -50,7 +50,7 @@ To change the host port, set `NOVNC_HOST_PORT` in `.env`.
 | `!abort` | Abort current task |
 | `!help` | Show command list |
 
-Any other message is sent to Claude as a prompt.
+Any other message is sent to Claude as a prompt. Messages sent while Claude is busy are automatically queued and processed in order.
 
 ## Environment Variables
 

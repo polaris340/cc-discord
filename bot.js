@@ -63,6 +63,8 @@ function spawnClaude(channelId, model) {
     outputBuffer: "",
     onChunk: null,
     onDone: null,
+    busy: false,
+    messageQueue: [],
   };
 
   // NDJSON line-buffered parser
@@ -92,8 +94,12 @@ function spawnClaude(channelId, model) {
 
   proc.on("exit", (code) => {
     console.log(`[${channelId}] claude exited (code ${code})`);
+    const dropped = session.messageQueue.length;
+    session.messageQueue = [];
+    session.busy = false;
     if (session.onDone) {
-      const msg = session.outputBuffer || `❌ claude exited (code ${code})`;
+      let msg = session.outputBuffer || `❌ claude exited (code ${code})`;
+      if (dropped) msg += `\n(${dropped} queued message(s) dropped)`;
       session.onDone(msg);
     }
     sessions.delete(channelId);
@@ -164,7 +170,8 @@ function sendPrompt(session, text) {
 // ── Commands ────────────────────────────────────────────────────────
 const COMMANDS = {
   new: {
-    run: (_s, _args, _msg, channelId) => {
+    run: (s, _args, _msg, channelId) => {
+      s.messageQueue = [];
       spawnClaude(channelId);
     },
     reply: "🔄 New session started.",
@@ -184,6 +191,8 @@ const COMMANDS = {
 
   abort: {
     run: (s, _args, _msg, channelId) => {
+      s.messageQueue = [];
+      s.busy = false;
       s.onDone = null;
       s.onChunk = null;
       s.proc.kill();
@@ -202,6 +211,7 @@ async function handleHelp(message) {
     "`!help` — this message",
     "",
     "Any other message is sent to Claude as a prompt.",
+    "Messages sent while busy are queued automatically.",
   ];
   await message.reply(lines.join("\n"));
 }
@@ -254,6 +264,57 @@ async function downloadAttachments(attachments) {
   return paths;
 }
 
+// ── Stream display & queue helpers ──────────────────────────────────
+function attachStreamDisplay(session, replyMessage) {
+  session.busy = true;
+  let lastEditContent = "";
+  let editTimer = null;
+  let latestContent = "";
+  let editChain = Promise.resolve();
+  const extraMessages = [replyMessage];
+
+  const scheduleEdit = (content) => {
+    latestContent = content;
+    if (editTimer) return;
+    editTimer = setTimeout(() => {
+      editTimer = null;
+      if (latestContent === lastEditContent) return;
+      lastEditContent = latestContent;
+      const c = latestContent;
+      editChain = editChain.then(() => updateMessages(extraMessages, c, false));
+    }, EDIT_INTERVAL);
+  };
+
+  session.onChunk = (buf) => scheduleEdit(buf);
+
+  session.onDone = (buf) => {
+    if (editTimer) {
+      clearTimeout(editTimer);
+      editTimer = null;
+    }
+    const content = buf || "*(empty response)*";
+    editChain = editChain.then(() => updateMessages(extraMessages, content, true))
+      .then(() => processQueue(session));
+  };
+}
+
+async function processQueue(session) {
+  if (!session.messageQueue.length) {
+    session.busy = false;
+    return;
+  }
+  const { prompt, discordMessage } = session.messageQueue.shift();
+  let reply;
+  try {
+    reply = await discordMessage.reply("⏳ Thinking...");
+  } catch (e) {
+    console.error(`[${session.channelId}] failed to reply to queued message:`, e.message);
+    return processQueue(session);
+  }
+  attachStreamDisplay(session, reply);
+  sendPrompt(session, prompt);
+}
+
 // ── Discord message handler ─────────────────────────────────────────
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
@@ -300,44 +361,38 @@ client.on("messageCreate", async (message) => {
 
   const session = getOrCreateSession(message.channelId);
 
-  // Reject if already processing
-  if (session.onChunk) {
-    await message.reply("⏳ Busy. Use `!abort` to cancel.");
+  // Queue if already processing
+  if (session.busy) {
+    session.messageQueue.push({ prompt, discordMessage: message });
+    await message.reply(`📥 Queued (#${session.messageQueue.length}). Will process after current response.`);
     return;
   }
 
   const reply = await message.reply("⏳ Thinking...");
-
-  let lastEditContent = "";
-  let editTimer = null;
-  let latestContent = "";
-  let editChain = Promise.resolve();
-  const extraMessages = [reply];
-
-  const scheduleEdit = (content) => {
-    latestContent = content;
-    if (editTimer) return;
-    editTimer = setTimeout(() => {
-      editTimer = null;
-      if (latestContent === lastEditContent) return;
-      lastEditContent = latestContent;
-      const c = latestContent;
-      editChain = editChain.then(() => updateMessages(extraMessages, c, false));
-    }, EDIT_INTERVAL);
-  };
-
-  session.onChunk = (buf) => scheduleEdit(buf);
-
-  session.onDone = (buf) => {
-    if (editTimer) {
-      clearTimeout(editTimer);
-      editTimer = null;
-    }
-    const content = buf || "*(empty response)*";
-    editChain = editChain.then(() => updateMessages(extraMessages, content, true));
-  };
-
+  attachStreamDisplay(session, reply);
   sendPrompt(session, prompt);
+});
+
+// ── Queue management via Discord message delete/edit ─────────────────
+client.on("messageDelete", (message) => {
+  for (const [, session] of sessions) {
+    const idx = session.messageQueue.findIndex((q) => q.discordMessage.id === message.id);
+    if (idx !== -1) {
+      session.messageQueue.splice(idx, 1);
+      console.log(`[${session.channelId}] removed queued message #${idx + 1}`);
+    }
+  }
+});
+
+client.on("messageUpdate", (_old, newMsg) => {
+  if (!newMsg.content) return;
+  for (const [, session] of sessions) {
+    const entry = session.messageQueue.find((q) => q.discordMessage.id === newMsg.id);
+    if (entry) {
+      entry.prompt = newMsg.content.trim();
+      console.log(`[${session.channelId}] updated queued message`);
+    }
+  }
 });
 
 // ── Start ───────────────────────────────────────────────────────────
