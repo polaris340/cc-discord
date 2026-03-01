@@ -92,7 +92,7 @@ function spawnClaude(channelId, model, resumeSessionId) {
   proc.on("error", (err) => {
     console.error(`[${channelId}] claude spawn failed:`, err.message);
     session.onDone?.("❌ Failed to start claude: " + err.message);
-    sessions.delete(channelId);
+    if (sessions.get(channelId) === session) sessions.delete(channelId);
   });
 
   proc.on("exit", (code) => {
@@ -105,7 +105,7 @@ function spawnClaude(channelId, model, resumeSessionId) {
       if (dropped) msg += `\n(${dropped} queued message(s) dropped)`;
       session.onDone(msg);
     }
-    sessions.delete(channelId);
+    if (sessions.get(channelId) === session) sessions.delete(channelId);
   });
 
   sessions.set(channelId, session);
