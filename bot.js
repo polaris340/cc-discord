@@ -1,5 +1,7 @@
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 import { spawn } from "child_process";
+import { writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const ALLOWED_USER_ID = process.env.ALLOWED_USER_ID;
@@ -235,13 +237,30 @@ async function updateMessages(msgList, content, isDone) {
   }
 }
 
+// ── File attachment handling ─────────────────────────────────────────
+const UPLOAD_DIR = join(WORKSPACE, "uploads");
+
+async function downloadAttachments(attachments) {
+  if (!attachments.size) return [];
+  await mkdir(UPLOAD_DIR, { recursive: true });
+  const paths = [];
+  for (const [, att] of attachments) {
+    const dest = join(UPLOAD_DIR, att.name);
+    const res = await fetch(att.url);
+    const buf = Buffer.from(await res.arrayBuffer());
+    await writeFile(dest, buf);
+    paths.push(dest);
+  }
+  return paths;
+}
+
 // ── Discord message handler ─────────────────────────────────────────
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (ALLOWED_USER_ID && message.author.id !== ALLOWED_USER_ID) return;
 
   const text = message.content.trim();
-  if (!text) return;
+  if (!text && !message.attachments.size) return;
 
   // ! command handling
   if (text.startsWith("!")) {
@@ -269,6 +288,14 @@ client.on("messageCreate", async (message) => {
     // Unknown command
     await message.reply(`Unknown command: \`!${cmdName}\`. Try \`!help\`.`);
     return;
+  }
+
+  // Download attachments
+  const filePaths = await downloadAttachments(message.attachments);
+  let prompt = text;
+  if (filePaths.length) {
+    const listing = filePaths.map((p) => `  ${p}`).join("\n");
+    prompt = (prompt ? prompt + "\n\n" : "") + `(attached files)\n${listing}`;
   }
 
   const session = getOrCreateSession(message.channelId);
@@ -310,7 +337,7 @@ client.on("messageCreate", async (message) => {
     editChain = editChain.then(() => updateMessages(extraMessages, content, true));
   };
 
-  sendPrompt(session, text);
+  sendPrompt(session, prompt);
 });
 
 // ── Start ───────────────────────────────────────────────────────────
