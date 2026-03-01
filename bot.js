@@ -248,17 +248,15 @@ const COMMANDS = {
   },
 
   abort: {
-    run: (s, _args, _msg, channelId) => {
+    async run(s, _args, message, channelId) {
       s.messageQueue = [];
       s.busy = false;
       s.onDone = null;
       s.onChunk = null;
-      const sid = s.sessionId;
       s.proc.kill();
       sessions.delete(channelId);
-      if (sid) spawnClaude(channelId, s.model, sid);
+      await message.reply("🛑 Aborted. Use `!resume 1` to continue the conversation.");
     },
-    reply: "🛑 Aborted. Session preserved.",
   },
 
   sessions: {
@@ -318,7 +316,7 @@ async function handleHelp(message) {
     "**Commands:**",
     "`!new` — start a new session (kill + respawn)",
     "`!model <name>` — restart with a different model (sonnet, opus, haiku)",
-    "`!abort` — abort current task (session preserved)",
+    "`!abort` — abort current task",
     "`!sessions` — list recent sessions",
     "`!resume <n>` — resume a previous session",
     "`!help` — this message",
