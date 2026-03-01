@@ -33,7 +33,7 @@ function getOrCreateSession(channelId) {
   return spawnClaude(channelId);
 }
 
-function spawnClaude(channelId, model) {
+function spawnClaude(channelId, model, resumeSessionId) {
   // Kill existing process if any
   const existing = sessions.get(channelId);
   if (existing) {
@@ -44,16 +44,19 @@ function spawnClaude(channelId, model) {
   }
 
   const selectedModel = model || existing?.model || "sonnet";
-  console.log(`[${channelId}] starting claude session (model: ${selectedModel})`);
+  console.log(`[${channelId}] starting claude session (model: ${selectedModel}${resumeSessionId ? `, resume: ${resumeSessionId}` : ""})`);
 
-  const proc = spawn("claude", [
+  const args = [
     "-p",
     "--input-format", "stream-json",
     "--output-format", "stream-json",
     "--verbose",
     "--dangerously-skip-permissions",
     "--model", selectedModel,
-  ], { cwd: WORKSPACE });
+  ];
+  if (resumeSessionId) args.push("--resume", resumeSessionId);
+
+  const proc = spawn("claude", args, { cwd: WORKSPACE });
 
   const session = {
     proc,
@@ -195,10 +198,12 @@ const COMMANDS = {
       s.busy = false;
       s.onDone = null;
       s.onChunk = null;
+      const sid = s.sessionId;
       s.proc.kill();
       sessions.delete(channelId);
+      if (sid) spawnClaude(channelId, s.model, sid);
     },
-    reply: "🛑 Aborted.",
+    reply: "🛑 Aborted. Session preserved.",
   },
 };
 
