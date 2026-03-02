@@ -327,37 +327,6 @@ async function handleHelp(message) {
   await message.reply(lines.join("\n"));
 }
 
-// ── Message splitting & edit helpers ────────────────────────────────
-function splitIntoChunks(text) {
-  const chunks = [];
-  while (text.length > MAX_MSG_LENGTH) {
-    let cut = text.lastIndexOf("\n", MAX_MSG_LENGTH);
-    if (cut <= 0) cut = MAX_MSG_LENGTH;
-    chunks.push(text.slice(0, cut));
-    text = text.slice(cut);
-  }
-  if (text) chunks.push(text);
-  return chunks.length ? chunks : [""];
-}
-
-async function updateMessages(msgList, content, isDone) {
-  const chunks = splitIntoChunks(content);
-
-  for (let i = 0; i < chunks.length; i++) {
-    const suffix = isDone && i === chunks.length - 1 ? "\n\n✅" : isDone ? "" : "\n\n⏳";
-
-    if (i < msgList.length) {
-      try { await msgList[i].edit(chunks[i] + suffix); }
-      catch (e) { console.error("edit failed:", e.message); }
-    } else {
-      try {
-        const newMsg = await msgList[msgList.length - 1].reply(chunks[i] + suffix);
-        msgList.push(newMsg);
-      } catch (e) { console.error("new message failed:", e.message); }
-    }
-  }
-}
-
 // ── File attachment handling ─────────────────────────────────────────
 const UPLOAD_DIR = join(WORKSPACE, "uploads");
 
@@ -378,11 +347,40 @@ async function downloadAttachments(attachments) {
 // ── Stream display & queue helpers ──────────────────────────────────
 function attachStreamDisplay(session, replyMessage) {
   session.busy = true;
-  let lastEditContent = "";
   let editTimer = null;
   let latestContent = "";
+  let lastEditContent = "";
   let editChain = Promise.resolve();
-  const extraMessages = [replyMessage];
+  const messages = [replyMessage];
+  let frozenLen = 0; // chars committed to previous (frozen) messages
+
+  const doUpdate = async (content, isDone) => {
+    if (frozenLen > content.length) frozenLen = content.length;
+    const suffix = isDone ? "\n\n✅" : "\n\n⏳";
+    let tail = content.slice(frozenLen);
+
+    // freeze current message and create new ones while tail exceeds limit
+    while (tail.length + suffix.length > MAX_MSG_LENGTH) {
+      let cut = tail.lastIndexOf("\n", MAX_MSG_LENGTH - suffix.length);
+      if (cut <= 0) cut = MAX_MSG_LENGTH - suffix.length;
+      const chunk = tail.slice(0, cut);
+
+      try { await messages[messages.length - 1].edit(chunk); }
+      catch (e) { console.error("edit failed:", e.message); break; }
+
+      try {
+        const newMsg = await messages[messages.length - 1].reply("⏳");
+        messages.push(newMsg);
+      } catch (e) { console.error("new message failed:", e.message); break; }
+
+      tail = tail.slice(cut);
+      frozenLen += chunk.length;
+    }
+
+    // edit last message with remaining tail
+    try { await messages[messages.length - 1].edit(tail + suffix); }
+    catch (e) { console.error("edit failed:", e.message); }
+  };
 
   const scheduleEdit = (content) => {
     latestContent = content;
@@ -392,7 +390,7 @@ function attachStreamDisplay(session, replyMessage) {
       if (latestContent === lastEditContent) return;
       lastEditContent = latestContent;
       const c = latestContent;
-      editChain = editChain.then(() => updateMessages(extraMessages, c, false));
+      editChain = editChain.then(() => doUpdate(c, false));
     }, EDIT_INTERVAL);
   };
 
@@ -404,8 +402,12 @@ function attachStreamDisplay(session, replyMessage) {
       editTimer = null;
     }
     const content = buf || "*(empty response)*";
-    editChain = editChain.then(() => updateMessages(extraMessages, content, true))
-      .then(() => processQueue(session));
+    editChain = editChain.then(() => doUpdate(content, true))
+      .then(() => processQueue(session))
+      .catch((e) => {
+        console.error(`[${session.channelId}] editChain error:`, e.message);
+        session.busy = false;
+      });
   };
 }
 
