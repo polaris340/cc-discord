@@ -65,6 +65,8 @@ function spawnClaude(channelId, model, resumeSessionId) {
     model: selectedModel,
     sessionId: null,
     outputBuffer: "",
+    outputPrefix: "",
+    lastText: "",
     onChunk: null,
     onDone: null,
     busy: false,
@@ -122,13 +124,21 @@ function handleClaudeEvent(session, event) {
   }
 
   if (event.type === "assistant") {
-    // Extract text from content blocks
     const content = event.message?.content;
     if (Array.isArray(content)) {
       for (const block of content) {
         if (block.type === "text" && block.text) {
-          // Replace accumulated text (assistant events carry full content, not deltas)
-          session.outputBuffer = block.text;
+          // New turn: text doesn't continue from previous → freeze buffer as prefix
+          if (session.lastText && !block.text.startsWith(session.lastText)) {
+            session.outputPrefix = session.outputBuffer;
+          } else if (!session.lastText && session.outputBuffer) {
+            // First text after tool_use markers → save markers as prefix
+            session.outputPrefix = session.outputBuffer;
+          }
+          session.outputBuffer = session.outputPrefix
+            ? session.outputPrefix + "\n" + block.text
+            : block.text;
+          session.lastText = block.text;
         } else if (block.type === "tool_use") {
           session.outputBuffer += `\n\`[${block.name}]\` `;
         }
@@ -142,10 +152,14 @@ function handleClaudeEvent(session, event) {
     if (event.subtype === "success") {
       // Use result text if available, otherwise keep buffer
       if (event.result) {
-        session.outputBuffer = event.result;
+        session.outputBuffer = session.outputPrefix
+          ? session.outputPrefix + "\n" + event.result
+          : event.result;
       }
       session.onDone?.(session.outputBuffer);
       session.outputBuffer = "";
+      session.outputPrefix = "";
+      session.lastText = "";
       session.onChunk = null;
       session.onDone = null;
     } else if (event.subtype === "error") {
@@ -153,6 +167,8 @@ function handleClaudeEvent(session, event) {
       session.outputBuffer += `\n❌ ${errMsg}`;
       session.onDone?.(session.outputBuffer);
       session.outputBuffer = "";
+      session.outputPrefix = "";
+      session.lastText = "";
       session.onChunk = null;
       session.onDone = null;
     }
